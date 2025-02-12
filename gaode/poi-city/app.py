@@ -5,6 +5,8 @@ import os
 import xlwt
 import pandas as pd
 from transCoordinateSystem import gcj02_to_wgs84, gcj02_to_bd09
+from ratelimit import limits, sleep_and_retry
+
 #from shp import trans_point_to_shp
 
 '''
@@ -27,16 +29,16 @@ from transCoordinateSystem import gcj02_to_wgs84, gcj02_to_bd09
 #################################################需要修改###########################################################
 
 # TODO 1.替换为从高德开放平台上申请申请的密钥
-amap_web_key = '申请的高德web秘钥'
+amap_web_key = os.getenv('AMAP_WEB_KEY', 'default_key')
 
 # TODO 2.分类关键字,最好对照<<高德地图POI分类关键字以及编码.xlsx>>来填写对应分类关键字(不是编码)，多个用逗号隔开
-keyword = ['大学']
+keyword = ['网球场']
 
 # TODO 3.城市，多个用逗号隔开
-city = ['北京']
+city = ['杭州']
 
 # TODO 4.输出数据坐标系,1为高德GCJ20坐标系，2WGS84坐标系，3百度BD09坐标系
-coord = 2
+coord = 1
 
 # TODO 5. 输出数据文件格式,1为默认xls格式，2为csv格式
 data_file_format = 2
@@ -49,6 +51,7 @@ poi_boundary_url = "https://ditu.amap.com/detail/get/detail"
 
 
 # 根据城市名称和分类关键字获取poi数据
+@limits(calls=1, period=1)
 def getpois(cityname, keywords):
     i = 1
     poilist = []
@@ -116,19 +119,21 @@ def write_to_excel(poilist, cityname, classfield):
 
 # 数据写入csv文件中
 def write_to_csv(poilist, cityname, classfield):
-    data_csv = {}
-    lons, lats, names, addresss, pnames, citynames, business_areas, types = [], [], [], [], [], [], [], []
+    lons, lats = [], []
 
-    for i in range(len(poilist)):
+    ids = [poi.get('id') for poi in poilist]
+    names = [poi.get('name') for poi in poilist]
+    addresss = [poi.get('address') for poi in poilist]
+    pnames = [poi.get('pname') for poi in poilist]
+    citynames = [poi.get('cityname') for poi in poilist]
+    business_areas = [poi.get('business_area') for poi in poilist]
+    types = [poi.get('type') for poi in poilist]
+
+    for poi in poilist:
         print('===================')
-        print(poilist[i])
-        location = poilist[i].get('location')
-        name = poilist[i].get('name')
-        address = poilist[i].get('address')
-        pname = poilist[i].get('pname')
-        cityname = poilist[i].get('cityname')
-        business_area = poilist[i].get('business_area')
-        type = poilist[i].get('type')
+        print(poi)
+
+        location = poi.get('location')
         lng = str(location).split(",")[0]
         lat = str(location).split(",")[1]
 
@@ -142,19 +147,18 @@ def write_to_csv(poilist, cityname, classfield):
             lat = result[1]
         lons.append(lng)
         lats.append(lat)
-        names.append(name)
-        addresss.append(address)
-        pnames.append(pname)
-        citynames.append(cityname)
-        if business_area == []:
-            business_area = ''
-        business_areas.append(business_area)
-        types.append(type)
-    data_csv['lon'], data_csv['lat'], data_csv['name'], data_csv['address'], data_csv['pname'], \
-    data_csv['cityname'], data_csv['business_area'], data_csv['type'] = \
-        lons, lats, names, addresss, pnames, citynames, business_areas, types
 
-    df = pd.DataFrame(data_csv)
+    df = pd.DataFrame({
+        'id': ids,
+        'lon': lons,
+        'lat': lats,
+        'name': names,
+        'address': addresss,
+        'pname': pnames,
+        'cityname': citynames,
+        'business_area': business_areas,
+        'type': types
+    })
 
     folder_name = 'poi-' + cityname + "-" + classfield
     folder_name_full = 'data' + os.sep + folder_name + os.sep
@@ -164,7 +168,8 @@ def write_to_csv(poilist, cityname, classfield):
     file_name = 'poi-' + cityname + "-" + classfield + ".csv"
     file_path = folder_name_full + file_name
 
-    df.to_csv(file_path, index=False, encoding='utf_8_sig')
+    sorted_df = df.sort_values(by=['id'], ascending=True)
+    sorted_df.to_csv(file_path, index=False)
     return folder_name_full, file_name
 
 
@@ -177,6 +182,8 @@ def hand(poilist, result):
 
 
 # 单页获取pois
+@sleep_and_retry
+@limits(calls=1, period=1)
 def getpoi_page(cityname, keywords, page):
     req_url = poi_search_url + "?key=" + amap_web_key + '&extensions=all&keywords=' + quote(
         keywords) + '&city=' + quote(cityname) + '&citylimit=true' + '&offset=25' + '&page=' + str(
@@ -231,6 +238,7 @@ def get_data(city, keyword):
     '''
     isNeedAreas = True
     if isNeedAreas:
+        # 获取城市下所有区的行政区划编码, 如 杭州 -> 西湖区/上城区的行政区划编码
         area = get_areas(city)
     all_pois = []
     if area != None and area != "":
@@ -262,7 +270,8 @@ def get_data(city, keyword):
 
     return None
 
-
+@sleep_and_retry
+@limits(calls=1, period=1)
 def get_distrinctNoCache(code):
     '''
     获取中国城市行政区划
